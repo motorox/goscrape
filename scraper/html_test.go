@@ -1,28 +1,36 @@
 package scraper
 
 import (
+	"bytes"
 	"testing"
 
-	"go.uber.org/zap/zaptest"
+	"github.com/cornelk/gotokit/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestRemoveAnchor(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-	s, err := New(logger, Config{})
-	if err != nil {
-		t.Errorf("Scraper New failed: %v", err)
+func TestFixFileReferences(t *testing.T) {
+	logger := log.NewTestLogger(t)
+	cfg := Config{
+		URL: "http://domain.com",
 	}
+	s, err := New(logger, cfg)
+	require.NoError(t, err)
 
-	var fixtures = map[string]string{
-		"github.com":                 "github.com",
-		"https://github.com/":        "https://github.com/",
-		"https://github.com/#anchor": "https://github.com/",
-	}
+	b := []byte(`
+<html lang="es">
+<a href="https://domain.com/wp-content/uploads/document.pdf" rel="doc">Guide</a>
+</html>
+`)
 
-	for input, expected := range fixtures {
-		output := s.RemoveAnchor(input)
-		if output != expected {
-			t.Errorf("URL %s should have been %s but was %s", input, expected, output)
-		}
-	}
+	buf := &bytes.Buffer{}
+	_, err = buf.Write(b)
+	require.NoError(t, err)
+
+	html, fixed, err := s.fixURLReferences(s.URL, buf)
+	require.NoError(t, err)
+	assert.True(t, fixed)
+
+	expected := "<html lang=\"es\"><head></head><body><a href=\"wp-content/uploads/document.pdf\" rel=\"doc\">Guide</a>\n\n</body></html>"
+	assert.Equal(t, expected, html)
 }

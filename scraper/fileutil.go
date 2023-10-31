@@ -2,11 +2,12 @@ package scraper
 
 import (
 	"bytes"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 
-	"go.uber.org/zap"
+	"github.com/cornelk/gotokit/log"
 )
 
 const (
@@ -31,11 +32,9 @@ func GetPageFilePath(url *url.URL) string {
 
 	default:
 		ext := filepath.Ext(fileName)
-		// if file extension is missing add .html
+		// if file extension is missing add .html, otherwise keep the existing file extension
 		if ext == "" {
 			fileName += PageExtension
-		} else if ext != PageExtension { // replace any other extension with .html
-			fileName = fileName[:len(fileName)-len(ext)] + PageExtension
 		}
 	}
 
@@ -62,23 +61,28 @@ func (s *Scraper) writeFile(filePath string, buf *bytes.Buffer) error {
 	if len(dir) < len(s.URL.Host) { // nothing to append if it is the root dir
 		dir = filepath.Join(".", s.URL.Host, dir)
 	}
-	s.log.Debug("Creating dir", zap.String("Path", dir))
+
+	s.logger.Debug("Creating dir", log.String("path", dir))
 	err := os.MkdirAll(dir, os.ModePerm)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating directory '%s': %w", dir, err)
 	}
 
-	s.log.Debug("Creating file", zap.String("Path", filePath))
+	s.logger.Debug("Creating file", log.String("path", filePath))
 	f, err := os.Create(filePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating file '%s': %w", filePath, err)
 	}
 
 	if _, err = f.Write(buf.Bytes()); err != nil {
+		// nolint: wrapcheck
 		_ = f.Close() // try to close and remove file but return the first error
 		_ = os.Remove(filePath)
-		return err
+		return fmt.Errorf("writing to file: %w", err)
 	}
 
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing file: %w", err)
+	}
+	return nil
 }

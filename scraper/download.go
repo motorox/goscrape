@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/cornelk/gotokit/log"
 	"github.com/headzoo/surf/browser"
-	"go.uber.org/zap"
 )
 
 // assetProcessor is a processor of a downloaded asset that can transform
@@ -50,14 +50,14 @@ func (s *Scraper) downloadAsset(asset *browser.DownloadableAsset, processor asse
 		return // exists already on disk
 	}
 
-	s.log.Info("Downloading", zap.String("URL", u))
+	s.logger.Info("Downloading", log.String("url", u))
 
 	buf := &bytes.Buffer{}
 	_, err := asset.Download(buf)
 	if err != nil {
-		s.log.Error("Downloading asset failed",
-			zap.String("URL", u),
-			zap.Error(err))
+		s.logger.Error("Downloading asset failed",
+			log.String("url", u),
+			log.Err(err))
 		return
 	}
 
@@ -66,9 +66,9 @@ func (s *Scraper) downloadAsset(asset *browser.DownloadableAsset, processor asse
 	}
 
 	if err = s.writeFile(filePath, buf); err != nil {
-		s.log.Error("Writing asset file failed",
-			zap.String("URL", u),
-			zap.String("file", filePath),
-			zap.Error(err))
+		s.logger.Error("Writing asset file failed",
+			log.String("url", u),
+			log.String("file", filePath),
+			log.Err(err))
 	}
 }

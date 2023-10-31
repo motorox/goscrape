@@ -4,11 +4,32 @@ import (
 	"net/url"
 	"testing"
 
-	"go.uber.org/zap/zaptest"
+	"github.com/cornelk/gotokit/log"
 )
 
+func TestRemoveAnchor(t *testing.T) {
+	logger := log.NewTestLogger(t)
+	s, err := New(logger, Config{})
+	if err != nil {
+		t.Errorf("Scraper New failed: %v", err)
+	}
+
+	var fixtures = map[string]string{
+		"github.com":                 "github.com",
+		"https://github.com/":        "https://github.com/",
+		"https://github.com/#anchor": "https://github.com/",
+	}
+
+	for input, expected := range fixtures {
+		output := s.RemoveAnchor(input)
+		if output != expected {
+			t.Errorf("URL %s should have been %s but was %s", input, expected, output)
+		}
+	}
+}
+
 func Test_resolveURL(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := log.NewTestLogger(t)
 	cfg := Config{
 		URL: "https://petpic.xyz/earth/",
 	}
@@ -21,7 +42,7 @@ func Test_resolveURL(t *testing.T) {
 	type filePathFixture struct {
 		BaseURL        url.URL
 		Reference      string
-		IsPage         bool
+		IsHyperlink    bool
 		RelativeToRoot string
 		Resolved       string
 	}
@@ -47,7 +68,7 @@ func Test_resolveURL(t *testing.T) {
 	}
 
 	for _, fix := range fixtures {
-		resolved := s.resolveURL(&fix.BaseURL, fix.Reference, fix.IsPage, fix.RelativeToRoot)
+		resolved := s.resolveURL(&fix.BaseURL, fix.Reference, fix.IsHyperlink, fix.RelativeToRoot)
 
 		if resolved != fix.Resolved {
 			t.Errorf("Reference %s should be resolved to %s but was %s", fix.Reference, fix.Resolved, resolved)
@@ -80,7 +101,7 @@ func Test_urlRelativeToOther(t *testing.T) {
 }
 
 func Test_urlRelativeToRoot(t *testing.T) {
-	logger := zaptest.NewLogger(t)
+	logger := log.NewTestLogger(t)
 	cfg := Config{
 		URL: "https://localhost",
 	}

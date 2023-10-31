@@ -3,17 +3,21 @@ package scraper
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
+	"github.com/cornelk/gotokit/log"
+	"github.com/h2non/filetype"
+	"github.com/h2non/filetype/types"
 	"github.com/headzoo/surf"
 	"github.com/headzoo/surf/agent"
 	"github.com/headzoo/surf/browser"
-	"go.uber.org/zap"
+	"golang.org/x/net/proxy"
 )
 
 // Config contains the scraper configuration.
@@ -29,12 +33,15 @@ type Config struct {
 	OutputDirectory string
 	Username        string
 	Password        string
+
+	UserAgent string
+	Proxy     string
 }
 
 // Scraper contains all scraping data.
 type Scraper struct {
 	config  Config
-	log     *zap.Logger
+	logger  *log.Logger
 	URL     *url.URL
 	browser *browser.Browser
 
@@ -49,40 +56,60 @@ type Scraper struct {
 }
 
 // New creates a new Scraper instance.
-func New(logger *zap.Logger, cfg Config) (*Scraper, error) {
-	var errs *multierror.Error
+func New(logger *log.Logger, cfg Config) (*Scraper, error) {
+	var errs []error
+
 	u, err := url.Parse(cfg.URL)
 	if err != nil {
-		errs = multierror.Append(errs, err)
+		errs = append(errs, err)
 	}
 
 	includes, err := compileRegexps(cfg.Includes)
 	if err != nil {
-		errs = multierror.Append(errs, err)
+		errs = append(errs, err)
 	}
 
 	excludes, err := compileRegexps(cfg.Excludes)
 	if err != nil {
-		errs = multierror.Append(errs, err)
+		errs = append(errs, err)
+	}
+
+	proxyURL, err := url.Parse(cfg.Proxy)
+	if err != nil {
+		errs = append(errs, err)
 	}
 
 	if errs != nil {
-		return nil, errs.ErrorOrNil()
+		return nil, errors.Join(errs...)
 	}
 
 	if u.Scheme == "" {
 		u.Scheme = "http" // if no URL scheme was given default to http
 	}
 
+	if cfg.UserAgent == "" {
+		cfg.UserAgent = agent.GoogleBot()
+	}
+
 	b := surf.NewBrowser()
-	b.SetUserAgent(agent.GoogleBot())
+	b.SetUserAgent(cfg.UserAgent)
 	b.SetTimeout(time.Duration(cfg.Timeout) * time.Second)
+
+	if cfg.Proxy != "" {
+		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("creating proxy from URL: %w", err)
+		}
+		b.SetTransport(&http.Transport{
+			Dial: dialer.Dial,
+		})
+	}
 
 	s := &Scraper{
 		config: cfg,
 
 		browser:   b,
-		log:       logger,
+		logger:    logger,
 		processed: make(map[string]struct{}),
 		URL:       u,
 		cssURLRe:  regexp.MustCompile(`^url\(['"]?(.*?)['"]?\)$`),
@@ -94,25 +121,30 @@ func New(logger *zap.Logger, cfg Config) (*Scraper, error) {
 
 // compileRegexps compiles the given regex strings to regular expressions
 // to be used in the include and exclude filters.
-func compileRegexps(sl []string) ([]*regexp.Regexp, error) {
-	var errs error
-	var l []*regexp.Regexp
-	for _, e := range sl {
-		re, err := regexp.Compile(e)
+func compileRegexps(regexps []string) ([]*regexp.Regexp, error) {
+	var errs []error
+	var compiled []*regexp.Regexp
+
+	for _, exp := range regexps {
+		re, err := regexp.Compile(exp)
 		if err == nil {
-			l = append(l, re)
+			compiled = append(compiled, re)
 		} else {
-			errs = multierror.Append(errs, err)
+			errs = append(errs, err)
 		}
 	}
-	return l, errs
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return compiled, nil
 }
 
 // Start starts the scraping.
 func (s *Scraper) Start() error {
 	if s.config.OutputDirectory != "" {
 		if err := os.MkdirAll(s.config.OutputDirectory, os.ModePerm); err != nil {
-			return err
+			return fmt.Errorf("creating directory '%s': %w", s.config.OutputDirectory, err)
 		}
 	}
 
@@ -127,31 +159,39 @@ func (s *Scraper) Start() error {
 		s.browser.AddRequestHeader("Authorization", "Basic "+auth)
 	}
 
-	s.downloadPage(s.URL, 0)
+	s.downloadURL(s.URL, 0)
 	return nil
 }
 
-func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
-	s.log.Info("Downloading", zap.Stringer("URL", u))
+func (s *Scraper) downloadURL(u *url.URL, currentDepth uint) {
+	s.logger.Info("Downloading", log.Stringer("URL", u))
+
 	if err := s.browser.Open(u.String()); err != nil {
-		s.log.Error("Request failed",
-			zap.Stringer("URL", u),
-			zap.Error(err))
+		s.logger.Error("Request failed",
+			log.Stringer("url", u),
+			log.Err(err))
 		return
 	}
+
 	if c := s.browser.StatusCode(); c != http.StatusOK {
-		s.log.Error("Request failed",
-			zap.Stringer("URL", u),
-			zap.Int("http_status_code", c))
+		s.logger.Error("Request failed",
+			log.Stringer("url", u),
+			log.Int("http_status_code", c))
 		return
 	}
 
 	buf := &bytes.Buffer{}
 	if _, err := s.browser.Download(buf); err != nil {
-		s.log.Error("Downloading content failed",
-			zap.Stringer("URL", u),
-			zap.Error(err))
+		s.logger.Error("Downloading content failed",
+			log.Stringer("url", u),
+			log.Err(err))
 		return
+	}
+
+	fileExtension := ""
+	kind, err := filetype.Match(buf.Bytes())
+	if err == nil && kind != types.Unknown {
+		fileExtension = kind.Extension
 	}
 
 	if currentDepth == 0 {
@@ -161,7 +201,7 @@ func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
 		s.URL = u
 	}
 
-	s.storePage(u, buf)
+	s.storeDownload(u, buf, fileExtension)
 
 	s.downloadReferences()
 
@@ -169,31 +209,41 @@ func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
 	// check first and download afterwards to not hit max depth limit for
 	// start page links because of recursive linking
 	for _, link := range s.browser.Links() {
-		if s.checkPageURL(link.URL, currentDepth) {
+		if s.shouldPageBeDownloaded(link.URL, currentDepth) {
 			toScrape = append(toScrape, link.URL)
 		}
 	}
 
 	for _, URL := range toScrape {
-		s.downloadPage(URL, currentDepth+1)
+		s.downloadURL(URL, currentDepth+1)
 	}
 }
 
-func (s *Scraper) storePage(u *url.URL, buf *bytes.Buffer) {
-	html, err := s.fixFileReferences(u, buf)
-	if err != nil {
-		s.log.Error("Fixing file references failed",
-			zap.Stringer("URL", u),
-			zap.Error(err))
-	} else {
-		buf = bytes.NewBufferString(html)
-		filePath := s.GetFilePath(u, true)
-		// always update html files, content might have changed
-		if err = s.writeFile(filePath, buf); err != nil {
-			s.log.Error("Writing HTML to file failed",
-				zap.Stringer("URL", u),
-				zap.String("file", filePath),
-				zap.Error(err))
+// storeDownload writes the download to a file, if a known binary file is detected, processing of the file as
+// page to look for links is skipped.
+func (s *Scraper) storeDownload(u *url.URL, buf *bytes.Buffer, fileExtension string) {
+	isAPage := false
+	if fileExtension == "" {
+		html, fixed, err := s.fixURLReferences(u, buf)
+		if err != nil {
+			s.logger.Error("Fixing file references failed",
+				log.Stringer("url", u),
+				log.Err(err))
+			return
 		}
+
+		if fixed {
+			buf = bytes.NewBufferString(html)
+		}
+		isAPage = true
+	}
+
+	filePath := s.GetFilePath(u, isAPage)
+	// always update html files, content might have changed
+	if err := s.writeFile(filePath, buf); err != nil {
+		s.logger.Error("Writing to file failed",
+			log.Stringer("URL", u),
+			log.String("file", filePath),
+			log.Err(err))
 	}
 }
