@@ -6,17 +6,17 @@ import (
 	"github.com/cornelk/gotokit/log"
 )
 
-// shouldPageBeDownloaded checks whether a page should be downloaded.
-func (s *Scraper) shouldPageBeDownloaded(url *url.URL, currentDepth uint) bool {
+// shouldURLBeDownloaded checks whether a page should be downloaded.
+// nolint: cyclop
+func (s *Scraper) shouldURLBeDownloaded(url *url.URL, currentDepth uint, isAsset bool) bool {
 	if url.Scheme != "http" && url.Scheme != "https" {
 		return false
 	}
-	if url.Host != s.URL.Host {
-		s.logger.Debug("Skipping external host page", log.Stringer("url", url))
-		return false
-	}
 
-	p := url.Path
+	p := url.String()
+	if url.Host == s.URL.Host {
+		p = url.Path
+	}
 	if p == "" {
 		p = "/"
 	}
@@ -25,14 +25,21 @@ func (s *Scraper) shouldPageBeDownloaded(url *url.URL, currentDepth uint) bool {
 		if url.Fragment != "" {
 			return false
 		}
-		s.logger.Debug("Skipping already checked page", log.Stringer("url", url))
 		return false
 	}
 
 	s.processed[p] = struct{}{}
-	if s.config.MaxDepth != 0 && currentDepth == s.config.MaxDepth {
-		s.logger.Debug("Skipping too deep level page", log.Stringer("url", url))
-		return false
+
+	if !isAsset {
+		if url.Host != s.URL.Host {
+			s.logger.Debug("Skipping external host page", log.String("url", url.String()))
+			return false
+		}
+
+		if s.config.MaxDepth != 0 && currentDepth == s.config.MaxDepth {
+			s.logger.Debug("Skipping too deep level page", log.String("url", url.String()))
+			return false
+		}
 	}
 
 	if s.includes != nil && !s.isURLIncluded(url) {
@@ -42,19 +49,15 @@ func (s *Scraper) shouldPageBeDownloaded(url *url.URL, currentDepth uint) bool {
 		return false
 	}
 
-	s.logger.Debug("New page to download", log.Stringer("url", url))
+	s.logger.Debug("New URL to download", log.String("url", url.String()))
 	return true
 }
 
 func (s *Scraper) isURLIncluded(url *url.URL) bool {
-	if url.Scheme == "data" {
-		return true
-	}
-
 	for _, re := range s.includes {
 		if re.MatchString(url.Path) {
 			s.logger.Info("Including URL",
-				log.Stringer("url", url),
+				log.String("url", url.String()),
 				log.Stringer("included_expression", re))
 			return true
 		}
@@ -63,14 +66,10 @@ func (s *Scraper) isURLIncluded(url *url.URL) bool {
 }
 
 func (s *Scraper) isURLExcluded(url *url.URL) bool {
-	if url.Scheme == "data" {
-		return true
-	}
-
 	for _, re := range s.excludes {
 		if re.MatchString(url.Path) {
 			s.logger.Info("Skipping URL",
-				log.Stringer("url", url),
+				log.String("url", url.String()),
 				log.Stringer("excluded_expression", re))
 			return true
 		}

@@ -1,20 +1,21 @@
 package scraper
 
 import (
-	"bytes"
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/cornelk/gotokit/log"
 	"github.com/gorilla/css/scanner"
-	"github.com/headzoo/surf/browser"
 )
 
-func (s *Scraper) checkCSSForUrls(url *url.URL, buf *bytes.Buffer) *bytes.Buffer {
+var cssURLRe = regexp.MustCompile(`^url\(['"]?(.*?)['"]?\)$`)
+
+func (s *Scraper) checkCSSForUrls(url *url.URL, data []byte) []byte {
 	urls := make(map[string]string)
-	str := buf.String()
+	str := string(data)
 	css := scanner.New(str)
 
 	for {
@@ -26,7 +27,7 @@ func (s *Scraper) checkCSSForUrls(url *url.URL, buf *bytes.Buffer) *bytes.Buffer
 			continue
 		}
 
-		match := s.cssURLRe.FindStringSubmatch(token.Value)
+		match := cssURLRe.FindStringSubmatch(token.Value)
 		if match == nil {
 			continue
 		}
@@ -38,21 +39,23 @@ func (s *Scraper) checkCSSForUrls(url *url.URL, buf *bytes.Buffer) *bytes.Buffer
 
 		u, err := url.Parse(src)
 		if err != nil {
-			return buf
+			s.logger.Error("Parsing URL failed",
+				log.String("url", src),
+				log.Err(err))
+			continue
 		}
 		u = url.ResolveReference(u)
 
-		img := browser.NewImageAsset(u, "", "", "")
-		s.imagesQueue = append(s.imagesQueue, &img.DownloadableAsset)
+		s.imagesQueue = append(s.imagesQueue, u)
 
 		cssPath := *url
 		cssPath.Path = path.Dir(cssPath.Path) + "/"
-		resolved := s.resolveURL(&cssPath, src, false, "")
+		resolved := resolveURL(&cssPath, src, s.URL.Host, false, "")
 		urls[token.Value] = resolved
 	}
 
 	if len(urls) == 0 {
-		return buf
+		return data
 	}
 
 	for ori, filePath := range urls {
@@ -63,5 +66,5 @@ func (s *Scraper) checkCSSForUrls(url *url.URL, buf *bytes.Buffer) *bytes.Buffer
 			log.String("fixed_url", fixed))
 	}
 
-	return bytes.NewBufferString(str)
+	return []byte(str)
 }

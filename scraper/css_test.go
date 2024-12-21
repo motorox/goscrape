@@ -1,11 +1,12 @@
 package scraper
 
 import (
-	"bytes"
 	"net/url"
 	"testing"
 
 	"github.com/cornelk/gotokit/log"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckCSSForURLs(t *testing.T) {
@@ -14,9 +15,7 @@ func TestCheckCSSForURLs(t *testing.T) {
 		URL: "http://localhost",
 	}
 	s, err := New(logger, cfg)
-	if err != nil {
-		t.Errorf("Scraper New failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	var fixtures = map[string]string{
 		"url('http://localhost/uri/between/single/quote')": "http://localhost/uri/between/single/quote",
@@ -32,23 +31,16 @@ func TestCheckCSSForURLs(t *testing.T) {
 	u, _ := url.Parse("http://localhost")
 	for input, expected := range fixtures {
 		s.imagesQueue = nil
-		buf := bytes.NewBufferString(input)
-		s.checkCSSForUrls(u, buf)
+		s.checkCSSForUrls(u, []byte(input))
 
 		if expected == "" {
-			if len(s.imagesQueue) != 0 {
-				t.Errorf("CSS %s should not result in an image in queue with URL %s", input, s.imagesQueue[0].URL.String())
-			}
+			assert.Empty(t, s.imagesQueue)
 			continue
 		}
 
-		if len(s.imagesQueue) == 0 {
-			t.Errorf("CSS %s did not result in an image in queue", input)
-		}
+		assert.NotEmpty(t, s.imagesQueue)
 
-		res := s.imagesQueue[0].URL.String()
-		if res != expected {
-			t.Errorf("URL %s should have been %s but was %s", input, expected, res)
-		}
+		res := s.imagesQueue[0].String()
+		assert.Equal(t, expected, res)
 	}
 }

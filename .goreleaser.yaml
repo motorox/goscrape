@@ -1,3 +1,5 @@
+version: 2
+
 before:
   hooks:
     - go mod download
@@ -14,6 +16,11 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{ .CommitDate }}
+
+dockers:
+  - id: goscrape
+    image_templates:
+      - "ghcr.io/cornelk/goscrape:{{ .Version }}"
 
 universal_binaries:
   - replace: false
@@ -40,4 +47,4 @@ snapshot:
   name_template: "{{ .Tag }}-snapshot"
 
 changelog:
-  skip: true
+  disable: true

@@ -1,74 +1,99 @@
 package scraper
 
 import (
-	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"net/url"
-	"os"
 
+	"github.com/cornelk/goscrape/htmlindex"
 	"github.com/cornelk/gotokit/log"
-	"github.com/headzoo/surf/browser"
 )
 
 // assetProcessor is a processor of a downloaded asset that can transform
 // a downloaded file content before it will be stored on disk.
-type assetProcessor func(URL *url.URL, buf *bytes.Buffer) *bytes.Buffer
+type assetProcessor func(URL *url.URL, data []byte) []byte
 
-func (s *Scraper) downloadReferences() {
-	for _, image := range s.browser.Images() {
-		s.imagesQueue = append(s.imagesQueue, &image.DownloadableAsset)
+var tagsWithReferences = []string{
+	htmlindex.LinkTag,
+	htmlindex.ScriptTag,
+	htmlindex.BodyTag,
+}
+
+func (s *Scraper) downloadReferences(ctx context.Context, index *htmlindex.Index) error {
+	references, err := index.URLs(htmlindex.BodyTag)
+	if err != nil {
+		s.logger.Error("Getting body node URLs failed", log.Err(err))
 	}
-	for _, stylesheet := range s.browser.Stylesheets() {
-		s.downloadAsset(&stylesheet.DownloadableAsset, s.checkCSSForUrls)
+	s.imagesQueue = append(s.imagesQueue, references...)
+
+	references, err = index.URLs(htmlindex.ImgTag)
+	if err != nil {
+		s.logger.Error("Getting img node URLs failed", log.Err(err))
 	}
-	for _, script := range s.browser.Scripts() {
-		s.downloadAsset(&script.DownloadableAsset, nil)
+	s.imagesQueue = append(s.imagesQueue, references...)
+
+	for _, tag := range tagsWithReferences {
+		references, err = index.URLs(tag)
+		if err != nil {
+			s.logger.Error("Getting node URLs failed",
+				log.String("node", tag),
+				log.Err(err))
+		}
+
+		var processor assetProcessor
+		if tag == htmlindex.LinkTag {
+			processor = s.checkCSSForUrls
+		}
+		for _, ur := range references {
+			if err := s.downloadAsset(ctx, ur, processor); err != nil && errors.Is(err, context.Canceled) {
+				return err
+			}
+		}
 	}
+
 	for _, image := range s.imagesQueue {
-		s.downloadAsset(image, s.checkImageForRecode)
+		if err := s.downloadAsset(ctx, image, s.checkImageForRecode); err != nil && errors.Is(err, context.Canceled) {
+			return err
+		}
 	}
 	s.imagesQueue = nil
+	return nil
 }
 
 // downloadAsset downloads an asset if it does not exist on disk yet.
-func (s *Scraper) downloadAsset(asset *browser.DownloadableAsset, processor assetProcessor) {
-	URL := asset.URL
-	u := URL.String()
-	if _, ok := s.processed[u]; ok {
-		return // was already processed
-	}
-	s.processed[u] = struct{}{}
+func (s *Scraper) downloadAsset(ctx context.Context, u *url.URL, processor assetProcessor) error {
+	u.Fragment = ""
+	urlFull := u.String()
 
-	if s.includes != nil && !s.isURLIncluded(URL) {
-		return
-	}
-	if s.excludes != nil && s.isURLExcluded(URL) {
-		return
+	if !s.shouldURLBeDownloaded(u, 0, true) {
+		return nil
 	}
 
-	filePath := s.GetFilePath(URL, false)
-	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
-		return // exists already on disk
+	filePath := s.getFilePath(u, false)
+	if s.fileExists(filePath) {
+		return nil
 	}
 
-	s.logger.Info("Downloading", log.String("url", u))
-
-	buf := &bytes.Buffer{}
-	_, err := asset.Download(buf)
+	s.logger.Info("Downloading asset", log.String("url", urlFull))
+	data, _, err := s.httpDownloader(ctx, u)
 	if err != nil {
 		s.logger.Error("Downloading asset failed",
-			log.String("url", u),
+			log.String("url", urlFull),
 			log.Err(err))
-		return
+		return fmt.Errorf("downloading asset: %w", err)
 	}
 
 	if processor != nil {
-		buf = processor(URL, buf)
+		data = processor(u, data)
 	}
 
-	if err = s.writeFile(filePath, buf); err != nil {
+	if err = s.fileWriter(filePath, data); err != nil {
 		s.logger.Error("Writing asset file failed",
-			log.String("url", u),
+			log.String("url", urlFull),
 			log.String("file", filePath),
 			log.Err(err))
 	}
+
+	return nil
 }
